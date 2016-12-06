@@ -6,6 +6,7 @@ Build a neural machine translation model with soft attention
 import theano
 import theano.tensor as tensor
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+from PIL import Image
 
 import cPickle as pkl
 import json
@@ -645,6 +646,42 @@ def pred_probs(f_log_probs, prepare_data, options, iterator, verbose=True, norma
 
     return numpy.array(probs), alignments_json
 
+def print_statistic(grad_name, batch_id, m):
+    print grad_name
+    print m.shape
+    if (m.ndim < 2):
+        print 'not interested in bias...'
+        return
+    (d1,d2) = m.shape
+    if (d1 > 5000) or (d2 > 5000):
+        print 'image is too big.. ignore for now'
+        return
+    highest = -99999999999
+    ct = 0
+    mean = 0.
+    m = numpy.absolute(m)
+    for row in m:
+        for i in row:
+            if (highest < i):
+                highest = i
+            ct = ct + 1
+            mean = mean + i
+
+
+
+    mean = mean / ct
+    print 'mean = %f' % mean
+    print 'highest = %f' % highest 
+    if highest == 0.:
+        return
+    
+    heatmap = (m / highest)
+    img = Image.fromarray(heatmap, 'L')
+    # print heatmap
+    img.save('gradient_image/%s-batch-%s.jpg'%(grad_name, batch_id))
+    print 'saving the gradient as image %s-batch-%s.jpg'%(grad_name, batch_id)
+
+
 
 def train(dim_word=100,  # word vector dimensionality
           dim=1000,  # the number of LSTM units
@@ -730,7 +767,7 @@ def train(dim_word=100,  # word vector dimensionality
         n_words = len(worddicts[1])
         model_options['n_words'] = n_words
 
-
+    print 'test version'
     print 'Loading data'
     domain_interpolation_cur = None
     if use_domain_interpolation:
@@ -835,9 +872,12 @@ def train(dim_word=100,  # word vector dimensionality
     else:
         updated_params = tparams
 
+    # for k, p  in tparams.iteritems():
+    #   print k
+    #    print_statistic(p.get_value())
+
     print 'Computing gradient...',
     grads = tensor.grad(cost, wrt=itemlist(updated_params))
-    print 'Done'
 
     # apply gradient clipping here
     if clip_c > 0.:
@@ -850,6 +890,15 @@ def train(dim_word=100,  # word vector dimensionality
                                            g / tensor.sqrt(g2) * clip_c,
                                            g))
         grads = new_grads
+
+    print grads
+    for x in grads:
+        print x**2
+        bzzz = 0.
+        bzzz += (x**2).sum()
+        print bzzz
+    print 'Done'
+
 
     # compile the optimizer, the actual computational graph is compiled here
     lr = tensor.scalar(name='lr')
@@ -889,6 +938,7 @@ def train(dim_word=100,  # word vector dimensionality
     last_disp_samples = 0
     ud_start = time.time()
     p_validation = None
+    print_idx = 0
     for eidx in xrange(max_epochs):
         n_samples = 0
 
@@ -913,11 +963,20 @@ def train(dim_word=100,  # word vector dimensionality
                 continue
 
             # compute cost, grads and copy grads to shared variables
+            past_tparams = [p.get_value() for k,p in tparams.iteritems()]
+            
             cost = f_grad_shared(x, x_mask, y, y_mask)
-
-            # do the update on parameters
+            print 'single batch grad'
+            print cost
             f_update(lrate)
 
+            curr_tparams = [p.get_value() for k,p in tparams.iteritems()]
+            names = [k for k,p in tparams.iteritems()]
+            for k, p, p2  in zip(names, curr_tparams, past_tparams):
+                # print p.get_value()
+                print_statistic(k, print_idx, p - p2)
+
+            print_idx = print_idx + 1
             # check for bad numbers, usually we remove non-finite elements
             # and continue training - but not done here
             if numpy.isnan(cost) or numpy.isinf(cost):
